@@ -90,15 +90,15 @@ if submit:
         # Get the expected column names from the finder
         try:
             # Try to determine the correct column names by inspecting the dataframe
-            bed_col = next((col for col in finder.data.columns if 'bed' in col.lower()), 'bedrooms')
-            bath_col = next((col for col in finder.data.columns if 'bath' in col.lower()), 'bathrooms')
-            type_col = next((col for col in finder.data.columns if 'type' in col.lower()), 'property_type')
+            bed_col = 'bedrooms'  # Default parameter name expected by find_classic_comps
+            bath_col = 'bathrooms'  # Default parameter name expected by find_classic_comps
+            type_col = 'property_type'  # Default parameter name expected by find_classic_comps
             
-            # Create criteria with possibly corrected column names
+            # Create criteria with the exact parameter names expected by find_classic_comps
             criteria = {
-                bed_col: bedrooms,
-                bath_col: bathrooms,
-                type_col: property_type,
+                "bedrooms": bedrooms,
+                "bathrooms": bathrooms,
+                "property_type": property_type,
                 "min_comps": 3,
                 "limit": 5,
             }
@@ -126,11 +126,10 @@ if submit:
             # If we get no results, try with fewer filters
             if len(comps_df) == 0:
                 st.warning("No results found with strict criteria. Trying with fewer filters...")
-                minimal_criteria = {"limit": 10}
-                
-                # Only add property type as it's usually less restrictive
-                if type_col in finder.data.columns:
-                    minimal_criteria[type_col] = property_type
+                minimal_criteria = {
+                    "limit": 10,
+                    "property_type": property_type
+                }
                 
                 st.write("Relaxed search criteria:", minimal_criteria)
                 results = finder.find_classic_comps(**minimal_criteria)
