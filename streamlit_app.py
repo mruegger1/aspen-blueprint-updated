@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from io import StringIO
-from src.aspen_comp_finder.classic_finder import ClassicCompFinder
+from aspen_comp_finder.classic_finder import ClassicCompFinder
 
 st.set_page_config(page_title="Aspen Blueprint - Comp Finder", layout="wide")
 st.title("🌼 Aspen Blueprint - Comparable Property Finder")
