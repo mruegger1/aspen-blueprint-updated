@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
 from io import StringIO
-# Assuming ClassicCompFinder is in a reachable path or installed
-# from aspen_comp_finder.classic_finder import ClassicCompFinder
+import numpy as np # Needed for price/sqft calculation safety
+
 # Placeholder for ClassicCompFinder if the actual import fails
 try:
     # Attempt to import the real class
@@ -15,179 +15,262 @@ except ImportError:
             if csv_path:
                 try:
                     self.data = pd.read_csv(csv_path)
-                    # Add dummy columns if they don't exist for demo purposes
-                    # Simplify dummy data addition - ensure core columns exist
-                    defaults = {
-                        'bedrooms': [2,3,4,2,3,5,1,3,4,2],
-                        'bathrooms': [2.0,2.5,3.0,1.5,2.0,4.0,1.0,2.5,3.5,2.0],
-                        'property_type': ['Condo', 'Single Family', 'Townhouse', 'Duplex'] * 3, # Original column might exist
-                        'resolved_property_type': ['Condominium', 'Single Family Home', 'Townhouse', 'Duplex'] * 3, # The target column
-                        'area': ['Core', 'West End', 'Red Mountain', 'Smuggler'] * 3,
-                        'str_eligible': [True, False] * 6,
-                        'adjusted_sold_price_time': [500k, 1.5m, 2.5m, 800k, 1.2m, 3.5m, 400k, 950k, 1.8m, 700k, 2m, 1m],
-                        'sqft': [1000, 2000, 3000, 1200, 1800, 4000, 800, 1500, 2500, 1100, 2200, 1400],
-                        'match_score': [0.8, 0.9, 0.7, 0.85, 0.95, 0.6, 0.75, 0.88, 0.78, 0.92, 0.82, 0.72],
-                        'address': [f'12{i} Main St' for i in range(12)],
-                        'price_per_sqft': [500, 750, 833, 667, 667, 875, 500, 633, 720, 636, 909, 714],
-                        'sold_date': pd.to_datetime(['2023-01-15', '2023-02-20', '2023-03-10', '2023-04-05', '2023-05-12', '2023-06-18', '2023-07-22', '2023-08-30', '2023-09-15', '2023-10-25', '2023-11-01', '2023-12-10'])
-                    }
-                    # Convert shorthand prices
-                    defaults['adjusted_sold_price_time'] = [int(p.replace('k','000').replace('m','000000')) for p in defaults['adjusted_sold_price_time']]
-
-                    data_len = len(self.data)
-                    for col, default_list in defaults.items():
-                         if col not in self.data.columns:
-                              # Extend default list to match data length if needed
-                              extended_list = (default_list * (data_len // len(default_list) + 1))[:data_len]
-                              self.data[col] = extended_list
-
                 except Exception as e:
-                    st.error(f"Dummy class failed to load CSV or add defaults: {e}")
-                    self.data = pd.DataFrame() # Initialize with empty dataframe
+                    st.error(f"Dummy class: Failed to load CSV from {csv_path}: {e}")
+                    self.data = pd.DataFrame() # Start empty if load fails
             elif data is not None:
-                self.data = data
+                self.data = data.copy() # Use a copy to avoid modifying original data
             else:
-                self.data = pd.DataFrame() # Initialize with empty dataframe
+                self.data = pd.DataFrame() # Start empty
 
-            # Ensure essential columns exist even if loading fails or data is empty
-            core_cols = ['bedrooms', 'bathrooms', 'property_type', 'resolved_property_type', 'area', 'str_eligible', 'adjusted_sold_price_time', 'sqft', 'match_score', 'address', 'price_per_sqft', 'sold_date']
-            for col in core_cols:
-                 if col not in self.data.columns:
-                      self.data[col] = [] # Add empty column if missing
+            # --- Ensure Essential Columns & Data Types ---
+            # Define expected columns and rough types (None means any)
+            expected_schema = {
+                'bedrooms': 'int64', 'bathrooms': 'float64',
+                'property_type': None, 'resolved_property_type': None, # Keep original and resolved
+                'area': None, 'str_eligible': None,
+                'adjusted_sold_price_time': 'float64', 'sold_price': 'float64',
+                'sqft': 'float64', 'total_sqft': 'float64',
+                'match_score': 'float64', 'address': None,
+                'price_per_sqft': 'float64', 'sold_date': 'datetime64[ns]',
+                'year_built': 'int64', 'year_remodeled': 'float64', # Add year cols
+                'latitude': 'float64', 'longitude': 'float64' # Add geo cols
+            }
 
+            # Add missing columns with default empty lists
+            for col, dtype in expected_schema.items():
+                if col not in self.data.columns:
+                    self.data[col] = [] # Add as empty
 
+            # Attempt to convert types, handling potential errors
+            for col, dtype in expected_schema.items():
+                if dtype and col in self.data.columns:
+                    try:
+                        if 'datetime' in dtype:
+                            self.data[col] = pd.to_datetime(self.data[col], errors='coerce')
+                        elif 'int' in dtype:
+                             # Convert float to int safely (handle NaN)
+                             self.data[col] = pd.to_numeric(self.data[col], errors='coerce').astype('Int64')
+                        else: # float or other
+                            self.data[col] = pd.to_numeric(self.data[col], errors='coerce')
+                    except Exception as e:
+                        st.warning(f"Dummy class: Could not convert column '{col}' to {dtype}: {e}. Keeping original type.")
+
+            # --- Add SqFt Fallback ---
+            if 'sqft' not in self.data.columns or self.data['sqft'].isnull().all():
+                 if 'total_sqft' in self.data.columns:
+                      st.info("Dummy class: Using 'total_sqft' as fallback for 'sqft'.")
+                      self.data['sqft'] = self.data['total_sqft']
+
+            # --- Add Price Fallback ---
+            if 'adjusted_sold_price_time' not in self.data.columns or self.data['adjusted_sold_price_time'].isnull().all():
+                 if 'sold_price' in self.data.columns:
+                      st.info("Dummy class: Using 'sold_price' as fallback for 'adjusted_sold_price_time'.")
+                      self.data['adjusted_sold_price_time'] = self.data['sold_price']
+
+            # --- Generate Dummy Data ONLY if DataFrame is still empty ---
+            if self.data.empty:
+                st.info("Dummy class: Generating sample data as DataFrame was empty.")
+                defaults = {
+                    'bedrooms': [2, 3, 4, 2, 3, 5, 1, 3, 4, 2, 10, 4],
+                    'bathrooms': [2.0, 2.5, 3.0, 1.5, 2.0, 4.0, 1.0, 2.5, 3.5, 2.0, 10.0, 5.0],
+                    'resolved_property_type': ['Condominium', 'Single Family Home', 'Townhouse', 'Duplex'] * 3,
+                    'property_type': ['Residential'] * 12, # More realistic original
+                    'area': ['Core', 'West End', 'Red Mountain', 'Smuggler'] * 3,
+                    'str_eligible': [True, False] * 6,
+                    'adjusted_sold_price_time': [500000, 1500000, 2500000, 800000, 1200000, 3500000, 400000, 950000, 1800000, 700000, 50000000, 15000000],
+                    'sqft': [1000, 2000, 3000, 1200, 1800, 4000, 800, 1500, 2500, 1100, 10000, 5000],
+                    'match_score': [0.8, 0.9, 0.7, 0.85, 0.95, 0.6, 0.75, 0.88, 0.78, 0.92, 0.99, 0.89],
+                    'address': [f'12{i} Main St' for i in range(12)],
+                    'sold_date': pd.to_datetime(['2023-01-15', '2023-02-20', '2023-03-10', '2023-04-05', '2023-05-12', '2023-06-18', '2023-07-22', '2023-08-30', '2023-09-15', '2023-10-25', '2023-11-01', '2023-12-10']),
+                    'year_built': [1980, 1995, 2010, 1975, 2000, 2018, 1965, 1988, 2005, 1992, 2022, 2015]
+                }
+                # Calculate price/sqft
+                defaults['price_per_sqft'] = [p / s if s > 0 else 0 for p, s in zip(defaults['adjusted_sold_price_time'], defaults['sqft'])]
+                self.data = pd.DataFrame(defaults)
+                # Add other expected columns as empty/NaN
+                for col, dtype in expected_schema.items():
+                     if col not in self.data.columns:
+                          self.data[col] = pd.NA if 'int' in str(dtype) or 'float' in str(dtype) else None if 'datetime' not in str(dtype) else pd.NaT
+                          if dtype:
+                               try:
+                                    if 'datetime' in dtype: self.data[col] = pd.to_datetime(self.data[col])
+                                    elif 'int' in dtype: self.data[col] = self.data[col].astype('Int64')
+                                    else: self.data[col] = pd.to_numeric(self.data[col])
+                               except: pass # Ignore conversion errors on empty addition
+
+        # --- MODIFIED: Dummy find_classic_comps with NEW Filters ---
         def find_classic_comps(self, **kwargs):
-            # Dummy implementation: return a slice of the data
-            st.warning("Using Dummy `find_classic_comps`. Results are not accurately filtered.")
-            limit = kwargs.get('limit', 5)
+            st.warning("Using Dummy `find_classic_comps`. Results simulate filtering but may not be fully accurate.")
+            limit = kwargs.get('limit', 10)
             filtered_df = self.data.copy()
 
-            # --- Simulate Fallback Logic (Fix #2 - Optional) ---
-            # This demonstrates the check. The actual filtering below in the dummy
-            # might still rely explicitly on 'property_type' key from kwargs.
-            # The *real* finder should ideally just use the keys passed in kwargs.
-            type_col_in_kwargs = None
-            if "resolved_property_type" in kwargs:
-                type_col_in_kwargs = "resolved_property_type"
-            elif "property_type" in kwargs:
-                type_col_in_kwargs = "property_type"
+            # Price Filter
+            price_col = 'adjusted_sold_price_time' # Primary price column
+            if price_col not in filtered_df.columns or filtered_df[price_col].isnull().all():
+                 price_col = 'sold_price' # Fallback
+            if price_col in filtered_df.columns:
+                 min_price = kwargs.get('min_price', 0)
+                 max_price = kwargs.get('max_price', float('inf'))
+                 filtered_df = filtered_df[filtered_df[price_col].between(min_price, max_price, inclusive='both')]
+            else:
+                 st.warning("Dummy Finder: No price column ('adjusted_sold_price_time' or 'sold_price') found for filtering.")
 
-            if "property_type" not in filtered_df.columns and "resolved_property_type" in filtered_df.columns:
-                st.info("Simulating fallback: 'property_type' missing, 'resolved_property_type' exists in dummy data frame.")
-                # In a real scenario, you might create the column if needed by downstream code:
-                # filtered_df["property_type"] = filtered_df["resolved_property_type"]
-                # But the goal is that the Streamlit fix makes this unnecessary by passing the correct key in kwargs.
+            # Bedrooms Filter
+            if 'bedrooms' in filtered_df.columns:
+                 min_beds = kwargs.get('bedrooms_min', 0)
+                 max_beds = kwargs.get('bedrooms_max', float('inf'))
+                 filtered_df = filtered_df[filtered_df['bedrooms'].between(min_beds, max_beds, inclusive='both')]
 
-            # --- Basic Filtering Simulation ---
-            if 'bedrooms' in kwargs and 'bedrooms' in filtered_df.columns:
-                 if kwargs.get('bedrooms_exact'):
-                      filtered_df = filtered_df[filtered_df['bedrooms'] == kwargs['bedrooms']]
-                 else:
-                      filtered_df = filtered_df[filtered_df['bedrooms'].between(kwargs['bedrooms']-1, kwargs['bedrooms']+1)]
+            # Bathrooms Filter
+            if 'bathrooms' in filtered_df.columns:
+                 min_baths = kwargs.get('bathrooms_min', 0.0)
+                 max_baths = kwargs.get('bathrooms_max', float('inf'))
+                 filtered_df = filtered_df[filtered_df['bathrooms'].between(min_baths, max_baths, inclusive='both')]
 
-            if 'bathrooms' in kwargs and 'bathrooms' in filtered_df.columns:
-                 if kwargs.get('bathrooms_exact'):
-                      filtered_df = filtered_df[filtered_df['bathrooms'] == kwargs['bathrooms']]
-                 else:
-                      filtered_df = filtered_df[filtered_df['bathrooms'].between(kwargs['bathrooms']-0.5, kwargs['bathrooms']+0.5)]
+            # Property Type Filter (List)
+            prop_type_col = 'resolved_property_type' # Primary type column
+            if prop_type_col not in filtered_df.columns:
+                 prop_type_col = 'property_type' # Fallback
+            if prop_type_col in filtered_df.columns and 'property_types' in kwargs:
+                 selected_types = kwargs['property_types']
+                 if isinstance(selected_types, list) and selected_types: # Ensure it's a non-empty list
+                      filtered_df = filtered_df[filtered_df[prop_type_col].isin(selected_types)]
+            elif 'property_types' in kwargs:
+                 st.warning(f"Dummy Finder: Property type column ('{prop_type_col}') not found for filtering.")
 
-            # --- MODIFIED: Use the property type key passed in kwargs ---
-            if type_col_in_kwargs and type_col_in_kwargs in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df[type_col_in_kwargs] == kwargs[type_col_in_kwargs]]
-            elif type_col_in_kwargs:
-                st.warning(f"Column '{type_col_in_kwargs}' used for property type filter not found in DataFrame.")
-
-
-            # --- Handle Area List ---
+            # Area Filter (List)
             area_col = self._get_area_col_name() # Find the area column dynamically
-            if area_col and f'{area_col}' in kwargs and area_col in filtered_df.columns:
-                 area_criteria = kwargs[f'{area_col}']
-                 if isinstance(area_criteria, list) and area_criteria: # Check if it's a non-empty list
-                      filtered_df = filtered_df[filtered_df[area_col].isin(area_criteria)]
-                 elif isinstance(area_criteria, str): # Handle single string selection
-                      filtered_df = filtered_df[filtered_df[area_col] == area_criteria]
+            if area_col and 'area' in kwargs and area_col in filtered_df.columns: # Key in kwargs is still 'area'
+                 selected_areas = kwargs['area']
+                 if isinstance(selected_areas, list) and selected_areas: # Check if it's a non-empty list
+                      filtered_df = filtered_df[filtered_df[area_col].isin(selected_areas)]
+            elif 'area' in kwargs:
+                 st.warning(f"Dummy Finder: Area column ('{area_col}') not found for filtering.")
 
-            if 'str_eligible' in kwargs and 'str_eligible' in filtered_df.columns:
-                 filtered_df = filtered_df[filtered_df['str_eligible'] == kwargs['str_eligible']]
+            # STR Filter
+            if 'str_eligible' in filtered_df.columns and kwargs.get('str_eligible') is True:
+                 # Handle boolean or numeric representation (e.g., 1 for True)
+                 if pd.api.types.is_bool_dtype(filtered_df['str_eligible']):
+                      filtered_df = filtered_df[filtered_df['str_eligible'] == True]
+                 elif pd.api.types.is_numeric_dtype(filtered_df['str_eligible']):
+                      filtered_df = filtered_df[filtered_df['str_eligible'] == 1]
+                 else: # Attempt string conversion
+                      filtered_df = filtered_df[filtered_df['str_eligible'].astype(str).str.lower().isin(['true', 'yes', '1'])]
 
-            # --- Calculate Dummy Stats ---
+            # --- Calculate Dummy Stats on Filtered Data ---
             stats = {}
             if not filtered_df.empty:
-                if 'adjusted_sold_price_time' in filtered_df.columns:
-                    stats['average_price'] = filtered_df['adjusted_sold_price_time'].mean()
-                if 'adjusted_sold_price_time' in filtered_df.columns and 'sqft' in filtered_df.columns and filtered_df['sqft'].gt(0).any():
-                    valid_sqft = filtered_df[filtered_df['sqft'] > 0]
-                    if not valid_sqft.empty:
-                         stats['average_price_per_sqft'] = (valid_sqft['adjusted_sold_price_time'] / valid_sqft['sqft']).mean()
+                 if price_col in filtered_df.columns:
+                      stats['average_price'] = filtered_df[price_col].mean()
+                 else:
+                      stats['average_price'] = 0
+
+                 sqft_col = 'sqft' if 'sqft' in filtered_df.columns else 'total_sqft' if 'total_sqft' in filtered_df.columns else None
+                 if price_col in filtered_df.columns and sqft_col and sqft_col in filtered_df.columns:
+                    # Avoid division by zero or NaN results, using numpy for safety
+                    valid_for_ppsf = filtered_df[[price_col, sqft_col]].dropna()
+                    valid_for_ppsf = valid_for_ppsf[valid_for_ppsf[sqft_col] > 0]
+                    if not valid_for_ppsf.empty:
+                         stats['average_price_per_sqft'] = np.mean(valid_for_ppsf[price_col] / valid_for_ppsf[sqft_col])
                     else:
                          stats['average_price_per_sqft'] = 0
-                else:
-                     stats['average_price_per_sqft'] = 0 # Default if columns missing or no valid sqft
+                 else:
+                      stats['average_price_per_sqft'] = 0
             else:
                 stats = {'average_price': 0, 'average_price_per_sqft': 0}
 
 
-            # Apply limit
+            # Apply limit (in a real scenario, this happens after scoring/sorting)
+            # For dummy, just take head
             comps = filtered_df.head(limit).copy()
-            # Ensure match_score exists for display, add dummy if needed
-            if 'match_score' not in comps.columns:
-                comps['match_score'] = [0.9 - i*0.05 for i in range(len(comps))]
 
+            # Ensure match_score exists for display
+            if 'match_score' not in comps.columns:
+                # Assign dummy scores if missing - less relevant now with stricter filters
+                comps['match_score'] = np.linspace(0.9, 0.7, len(comps)) if len(comps) > 0 else []
 
             return {"comps": comps, "stats": stats}
 
         def _get_area_col_name(self):
             """Helper to find the likely area column name."""
-            possible_area_columns = ['area', 'Area', 'AREA', 'neighborhood', 'Neighborhood', 'location', 'Location']
-            if hasattr(self, 'data') and self.data is not None: # Check if data exists
+            possible_area_columns = ['area', 'Area', 'AREA', 'neighborhood', 'Neighborhood', 'location', 'Location', 'major_area', 'Major Area']
+            if hasattr(self, 'data') and self.data is not None:
                  for col in possible_area_columns:
                       if col in self.data.columns:
                            return col
-            return None # Return None if no likely column is found
+            return 'area' # Default fallback
 
 # --- Page Config ---
 st.set_page_config(page_title="Aspen Blueprint - Comp Finder", layout="wide")
 st.title("🌼 Aspen Blueprint - Comparable Property Finder")
 st.markdown("""
-Upload your Aspen dataset (or use the default), then select a property profile to find top comparable sales.
-This tool uses the ClassicCompFinder engine.
+Upload your Aspen dataset (or use the default), then adjust filters to find relevant comparable sales.
 """)
 
 # --- Load Data Once ---
 @st.cache_data
 def load_data(uploaded_file=None):
-    if uploaded_file is not None:
-        try:
+    finder_instance = None
+    df = None
+    message = None
+    error_msg = None
+
+    try:
+        if uploaded_file is not None:
             content = uploaded_file.getvalue().decode("utf-8")
             df = pd.read_csv(StringIO(content))
-            finder = ClassicCompFinder(data=df)
-            return finder, None, f"Uploaded file '{uploaded_file.name}' loaded ({len(finder.data)} properties)"
-        except Exception as e:
-            return None, f"Failed to process uploaded file: {e}", None
-    else:
-        try:
+            message = f"Uploaded file '{uploaded_file.name}' loaded ({len(df)} properties)"
+        else:
             default_path = "data/aspen_mvp_final_scored.csv"
-            finder = ClassicCompFinder(csv_path=default_path)
-            if not hasattr(finder, 'data') or finder.data is None or finder.data.empty:
-                 # Attempt to create dummy finder if real one failed/no data
-                 st.warning(f"Default data file not found or empty at '{default_path}'. Attempting to use dummy data.")
-                 finder = ClassicCompFinder(data=pd.DataFrame()) # Init with empty, let dummy logic add cols
-                 if not finder.data.empty:
-                      return finder, None, f"Using dummy data structure ({len(finder.data)} placeholder rows)."
-                 else:
-                      return None, "Failed to load default data and dummy data generation failed.", None
-            return finder, None, f"Default dataset loaded ({len(finder.data)} properties)"
-        except Exception as e:
-             # Last resort: Try dummy finder
-             st.warning(f"Failed to load default data: {e}. Attempting dummy data.")
-             try:
-                  finder = ClassicCompFinder(data=pd.DataFrame())
-                  if not finder.data.empty:
-                       return finder, None, f"Using dummy data structure ({len(finder.data)} placeholder rows)."
-                  else:
-                       return None, "Failed to load default data and dummy data generation failed.", None
-             except Exception as e_dummy:
-                  return None, f"Failed to load default data and dummy data failed: {e_dummy}", None
+            try:
+                df = pd.read_csv(default_path)
+                message = f"Default dataset loaded ({len(df)} properties)"
+            except FileNotFoundError:
+                st.warning(f"Default data file not found at '{default_path}'. Using dummy data structure.")
+                # Let finder init with None, it will generate dummy data if needed
+            except Exception as e:
+                 error_msg = f"Failed to load default data: {e}. Trying dummy data."
+                 st.warning(error_msg)
+
+        # --- Data Preprocessing (Including Mobile Home Removal) ---
+        if df is not None:
+            # Determine the property type column
+            type_col = 'resolved_property_type' if 'resolved_property_type' in df.columns else 'property_type'
+            if type_col in df.columns:
+                initial_count = len(df)
+                # Filter out 'Mobile Home' if the column exists
+                if 'Mobile Home' in df[type_col].unique():
+                    df = df[df[type_col] != 'Mobile Home'].copy()
+                    removed_count = initial_count - len(df)
+                    if removed_count > 0:
+                         message += f" (Removed {removed_count} Mobile Homes)."
+                # Handle potential NaN values in key filtering columns
+                filter_cols = ['bedrooms', 'bathrooms', 'adjusted_sold_price_time', 'sold_price', 'sqft', 'total_sqft', type_col]
+                for fc in filter_cols:
+                    if fc in df.columns and df[fc].isnull().any():
+                        # Decide on strategy: dropna or fillna(0)? Dropping seems safer for comps.
+                        # df = df.dropna(subset=[fc])
+                        # Or maybe just warn and let the filtering handle it? Let's warn for now.
+                         st.info(f"Column '{fc}' contains NaN values, which might affect filtering.")
+
+            else:
+                st.warning("Could not find 'resolved_property_type' or 'property_type' column for Mobile Home removal.")
+
+            finder_instance = ClassicCompFinder(data=df) # Init with potentially processed df
+        else:
+            finder_instance = ClassicCompFinder() # Init empty, will generate dummy if needed
+
+        # Final check if finder has data
+        if not hasattr(finder_instance, 'data') or finder_instance.data is None or finder_instance.data.empty:
+            error_msg = "Failed to load or generate any data."
+            finder_instance = None # Ensure finder is None if truly no data
+
+    except Exception as e:
+        error_msg = f"An error occurred during data loading: {e}"
+        finder_instance = None # Ensure finder is None on error
+
+    return finder_instance, error_msg, message if not error_msg else None
 
 
 # --- File Uploader ---
@@ -198,149 +281,195 @@ finder, error, success_message = load_data(uploaded_file)
 
 if error:
     st.error(error)
-    st.stop()
+    # Attempt to proceed if finder has *dummy* data, otherwise stop
+    if finder is None or not hasattr(finder, 'data') or finder.data.empty:
+        st.stop()
+    else:
+        st.warning("Proceeding with dummy data structure due to loading errors.")
 elif success_message:
     st.success(success_message)
 
-# Ensure finder is initialized before proceeding
-if finder is None or not hasattr(finder, 'data') or finder.data is None or finder.data.empty:
-    st.error("Data could not be loaded. Please upload a valid CSV or ensure the default data path is correct.")
-    st.stop()
+# Final check before accessing finder.data
+if finder is None or not hasattr(finder, 'data') or finder.data is None:
+     st.error("Critical error: Finder object not available. Cannot proceed.")
+     st.stop()
 
-# --- Debug info - show columns ---
+
+# --- Determine Columns ---
+# Use helper or fallback for Area column
+area_column = finder._get_area_col_name() if hasattr(finder, '_get_area_col_name') else 'area'
+if area_column not in finder.data.columns:
+     st.warning(f"Identified area column '{area_column}' not found in data. Area filtering may fail.")
+     area_column = None # Disable area filtering if column missing
+
+# Determine Property Type column
+type_column = 'resolved_property_type' if 'resolved_property_type' in finder.data.columns else 'property_type'
+if type_column not in finder.data.columns:
+     st.warning("Neither 'resolved_property_type' nor 'property_type' found. Type filtering disabled.")
+     type_column = None # Disable type filtering
+
+# Determine Price column
+price_column = 'adjusted_sold_price_time' if 'adjusted_sold_price_time' in finder.data.columns and not finder.data['adjusted_sold_price_time'].isnull().all() else 'sold_price'
+if price_column not in finder.data.columns:
+     st.warning("Neither 'adjusted_sold_price_time' nor 'sold_price' found. Price filtering disabled.")
+     price_column = None
+
+
+# --- Debug info ---
 with st.expander("Debug Data Info"):
     st.write("Available columns:", finder.data.columns.tolist())
-    # Check for expected columns
-    expected_cols = ['bedrooms', 'bathrooms', 'resolved_property_type', 'property_type', 'adjusted_sold_price_time', 'sqft', 'str_eligible'] # Added resolved_property_type
-    missing_cols = [col for col in expected_cols if col not in finder.data.columns]
-    if missing_cols:
-        st.warning(f"Potentially missing expected columns: {', '.join(missing_cols)}")
-
-    # Attempt to get area column name
-    area_column = finder._get_area_col_name() if hasattr(finder, '_get_area_col_name') else None
-    # Fallback if method fails or doesn't exist
-    if not area_column or area_column not in finder.data.columns:
-         possible_area_columns = ['area', 'Area', 'AREA', 'neighborhood', 'Neighborhood', 'location', 'Location']
-         for col in possible_area_columns:
-              if col in finder.data.columns:
-                   area_column = col
-                   break
-
-    if area_column and area_column in finder.data.columns:
-        st.info(f"Using column '{area_column}' for area filtering.")
-    else:
-        st.warning(f"Could not reliably identify an area column (tried likely names like 'area', 'neighborhood', etc.). Area filtering might be affected.")
-
-    # Check for property type columns
-    if 'resolved_property_type' in finder.data.columns:
-         st.info("'resolved_property_type' column found.")
-    else:
-         st.warning("'resolved_property_type' column NOT found. Property type filtering may fail.")
-    if 'property_type' in finder.data.columns:
-         st.info("'property_type' column found (may be generic).")
-    else:
-         st.warning("'property_type' column NOT found.")
+    st.info(f"Using '{area_column}' for Area filtering (if available).")
+    st.info(f"Using '{type_column}' for Property Type filtering (if available).")
+    st.info(f"Using '{price_column}' for Price filtering (if available).")
 
 
-# --- User Filters ---
+# --- MODIFIED: User Filters Sidebar ---
 st.sidebar.header("Property Filters")
 
-bedrooms = st.sidebar.slider("Bedrooms", 1, 10, 3)
-exact_beds = st.sidebar.checkbox("Match Exact Bedrooms")
+# --- PRICE ---
+price_min = st.sidebar.number_input(
+    f"Min Price ($) (using '{price_column}')",
+    min_value=0, max_value=200_000_000, value=1_000_000, step=100_000,
+    disabled=(price_column is None),
+    help=f"Filters on the '{price_column}' column."
+)
+price_max = st.sidebar.number_input(
+    "Max Price ($)",
+    min_value=0, max_value=200_000_000, value=50_000_000, step=100_000, # Adjusted default max
+    disabled=(price_column is None)
+)
 
-bathrooms = st.sidebar.slider("Bathrooms", 1.0, 10.0, 2.0, step=0.5)
-exact_baths = st.sidebar.checkbox("Match Exact Bathrooms")
+# --- BEDROOMS ---
+beds_min = st.sidebar.number_input("Min Bedrooms", min_value=0, max_value=20, value=2, disabled=('bedrooms' not in finder.data.columns))
+beds_max = st.sidebar.number_input("Max Bedrooms", min_value=0, max_value=20, value=5, disabled=('bedrooms' not in finder.data.columns))
+# Add validation feedback if min > max
+if beds_min > beds_max:
+     st.sidebar.warning("Min Bedrooms cannot be greater than Max Bedrooms.")
 
-# --- MODIFIED: Dynamically select property type column ---
-# Determine the best column to use for property type filters
-type_column = "resolved_property_type" if "resolved_property_type" in finder.data.columns else "property_type"
-# <<< MODIFIED
+# --- BATHROOMS ---
+baths_min = st.sidebar.number_input("Min Bathrooms", min_value=0.0, max_value=25.0, value=2.0, step=0.5, disabled=('bathrooms' not in finder.data.columns))
+baths_max = st.sidebar.number_input("Max Bathrooms", min_value=0.0, max_value=25.0, value=6.0, step=0.5, disabled=('bathrooms' not in finder.data.columns))
+# Add validation feedback if min > max
+if baths_min > baths_max:
+     st.sidebar.warning("Min Bathrooms cannot be greater than Max Bathrooms.")
 
-# Use the determined column to populate the dropdown
-if type_column in finder.data.columns:
-    prop_types = ["Any"] + sorted(finder.data[type_column].dropna().unique().tolist())
-    st.sidebar.info(f"Using '{type_column}' for property types.") # Inform user
-else:
-    prop_types = ["Any"]
-    st.sidebar.warning("No suitable 'property_type' or 'resolved_property_type' column found.")
-# <<< MODIFIED (Logic to populate prop_types)
 
-property_type = st.sidebar.selectbox("Property Type", prop_types)
+# --- PROPERTY TYPE ---
+available_types = []
+if type_column and type_column in finder.data.columns:
+    available_types = sorted(finder.data[type_column].dropna().unique().tolist())
 
-# Area Multi-Select (using the previously determined area_column)
-selected_areas = []
+# Determine default: try to select common types, or all if few options
+default_types = available_types # Default to all initially
+common_types = ['Single Family Home', 'Condominium', 'Townhouse', 'Duplex', 'Half Duplex']
+subset_default = [t for t in common_types if t in available_types]
+if len(subset_default) > 0 and len(subset_default) < len(available_types):
+     default_types = subset_default # Default to common types if present
+
+property_types = st.sidebar.multiselect(
+    f"Property Types (using '{type_column}')",
+    available_types,
+    default=default_types, # Default to common types or all
+    disabled=(type_column is None or not available_types)
+)
+
+# --- AREA ---
+area_options = []
 if area_column and area_column in finder.data.columns:
-    areas = sorted(finder.data[area_column].dropna().unique().tolist())
-    if areas:
-         selected_areas = st.sidebar.multiselect(f"Select Areas (using '{area_column}')", options=areas, default=[])
-    else:
-         st.sidebar.warning(f"No unique values found in '{area_column}' column.")
-else:
-    st.sidebar.warning("No suitable 'Area' column found. Area filtering disabled.")
+    area_options = sorted(finder.data[area_column].dropna().unique().tolist())
 
-# STR Toggle
+selected_areas = st.sidebar.multiselect(
+    f"Neighborhood / Area (using '{area_column}')",
+    area_options,
+    default=area_options, # Default to all areas
+    disabled=(area_column is None or not area_options)
+)
+
+# --- STR ---
 str_col_present = 'str_eligible' in finder.data.columns
-str_eligible_filter = st.sidebar.checkbox("Must be Short-Term Rental Eligible", value=False, disabled=not str_col_present, help="Only include properties marked as STR Eligible.")
+str_eligible_filter = st.sidebar.checkbox(
+    "Must be STR Eligible",
+    value=False,
+    disabled=not str_col_present,
+    help="Requires 'str_eligible' column to be True or 1."
+)
 if not str_col_present:
-     st.sidebar.caption("'_str_eligible_' column not found in data.")
+     st.sidebar.caption("'str_eligible' column not found.")
 
 
 submit = st.sidebar.button("Find Comparable Properties")
 
-# --- Data Analysis (Distribution) ---
-with st.expander("Dataset Property Distribution Overview"):
-    col1, col2 = st.columns(2)
-    with col1:
-        try:
-            if 'bedrooms' in finder.data.columns and 'bathrooms' in finder.data.columns:
-                bed_bath_distribution = finder.data.groupby(['bedrooms', 'bathrooms']).size().reset_index(name='count').sort_values('count', ascending=False)
-                st.write("Bed/Bath combinations:")
-                st.dataframe(bed_bath_distribution, use_container_width=True, height=200)
-            else:
-                 st.warning("Missing 'bedrooms' or 'bathrooms' column for distribution.")
-        except Exception as e:
-            st.warning(f"Couldn't analyze bed/bath distribution: {e}")
-    with col2:
-        try:
-            # --- MODIFIED: Use the dynamic type_column for distribution analysis ---
-            if type_column in finder.data.columns:
-                prop_type_distribution = finder.data[type_column].value_counts().reset_index()
-                prop_type_distribution.columns = [type_column.replace('_',' ').title(), 'Count'] # Make header nice
-                st.write(f"{type_column.replace('_',' ').title()} distribution:")
-                st.dataframe(prop_type_distribution, use_container_width=True, height=200)
-            else:
-                 st.warning("Missing property type column for distribution.")
-            # <<< MODIFIED
-        except Exception as e:
-            st.warning(f"Couldn't analyze property type distribution: {e}")
+# --- Data Analysis (Distribution) --- Display relevant distributions
+with st.expander("Dataset Distribution Overview"):
+     col1, col2 = st.columns(2)
+     with col1:
+          if type_column and type_column in finder.data.columns:
+               try:
+                    type_dist = finder.data[type_column].value_counts().reset_index()
+                    type_dist.columns = [type_column.replace('_',' ').title(), 'Count']
+                    st.write(f"{type_column.replace('_',' ').title()} Counts:")
+                    st.dataframe(type_dist, use_container_width=True, height=200)
+               except Exception as e: st.warning(f"Could not display type distribution: {e}")
+          else: st.caption("Property type column not available.")
+     with col2:
+          if area_column and area_column in finder.data.columns:
+               try:
+                    area_dist = finder.data[area_column].value_counts().reset_index()
+                    area_dist.columns = [area_column.replace('_',' ').title(), 'Count']
+                    st.write(f"{area_column.replace('_',' ').title()} Counts:")
+                    st.dataframe(area_dist, use_container_width=True, height=200)
+               except Exception as e: st.warning(f"Could not display area distribution: {e}")
+          else: st.caption("Area column not available.")
 
 
-# --- Search Logic ---
+# --- MODIFIED: Search Logic ---
 if submit:
+    # --- Input Validation ---
+    validation_passed = True
+    if beds_min > beds_max:
+        st.sidebar.error("Min Bedrooms > Max Bedrooms!")
+        validation_passed = False
+    if baths_min > baths_max:
+        st.sidebar.error("Min Bathrooms > Max Bathrooms!")
+        validation_passed = False
+    if price_min > price_max:
+        st.sidebar.error("Min Price > Max Price!")
+        validation_passed = False
+    if not property_types:
+         st.sidebar.error("Please select at least one Property Type.")
+         validation_passed = False
+    if not selected_areas:
+         st.sidebar.error("Please select at least one Neighborhood / Area.")
+         validation_passed = False
+
+    if not validation_passed:
+         st.error("Please correct the errors in the filters before submitting.")
+         st.stop()
+    # --- End Validation ---
+
     with st.spinner("Finding comps..."):
-        # Build criteria dictionary dynamically
+        # --- Build criteria dictionary ---
         criteria = {
-            "bedrooms": bedrooms,
-            "bathrooms": bathrooms,
-            "min_comps": 3,
-            "limit": 10,
+            "limit": 15, # Show a few more potential comps
         }
-
-        if exact_beds: criteria["bedrooms_exact"] = bedrooms
-        if exact_baths: criteria["bathrooms_exact"] = bathrooms
-
-        # --- MODIFIED: Use the dynamic type_column for criteria key ---
-        if property_type != "Any" and type_column in finder.data.columns: # Check if column exists
-             criteria[type_column] = property_type
-        # <<< MODIFIED
-
-        if area_column and selected_areas:
-            criteria[area_column] = selected_areas
-
+        # Only add filters if the corresponding column exists
+        if price_column:
+             criteria["min_price"] = price_min
+             criteria["max_price"] = price_max
+        if 'bedrooms' in finder.data.columns:
+             criteria["bedrooms_min"] = beds_min
+             criteria["bedrooms_max"] = beds_max
+        if 'bathrooms' in finder.data.columns:
+             criteria["bathrooms_min"] = baths_min
+             criteria["bathrooms_max"] = baths_max
+        if type_column and property_types: # Pass list if column exists and types selected
+            criteria["property_types"] = property_types # Key is plural for list
+        if area_column and selected_areas: # Pass list if column exists and areas selected
+            criteria["area"] = selected_areas # Key is singular 'area' but value is list
         if str_col_present and str_eligible_filter:
-            criteria['str_eligible'] = True
+            criteria['str_eligible'] = True # Only add if checked
 
-        st.write("Searching with the following criteria:")
+        st.write("Searching with criteria:")
         st.write(criteria)
 
         try:
@@ -349,37 +478,48 @@ if submit:
             comps_df = results.get("comps", pd.DataFrame())
             stats = results.get("stats", {})
 
+            # --- Handle No Results ---
             if comps_df.empty:
-                st.warning("No results found with the specified criteria.")
+                st.warning("No results found with the specified criteria. Try relaxing the filters (e.g., widen price range, include more areas/types).")
+                # Placeholder for future "expand search" logic
                 st.stop()
+
+            # --- Poor Comp Warning (Placeholder) ---
+            avg_comp_price = stats.get('average_price', 0)
+            # Simple check: if average comp price is less than half the min requested price
+            # This needs refinement, ideally comparing to a SUBJECT property price if available.
+            if avg_comp_price > 0 and price_min > 0 and avg_comp_price < (price_min / 2):
+                 st.warning("⚠️ Warning: Found comps are significantly below the requested minimum price. Consider adjusting price filters or other criteria for better relevance.")
+            # Add similar check for $/sqft if desired
 
             # --- Display Results ---
             st.subheader(f"Top {len(comps_df)} Comparable Properties Found")
-
-            # --- MODIFIED: Include both property type columns if they exist ---
             display_cols = [
-                'address', area_column, # Use dynamic area column
-                'resolved_property_type', 'property_type', # Show both for comparison if they exist
-                'bedrooms', 'bathrooms', 'sqft', 'adjusted_sold_price_time',
-                'price_per_sqft', 'sold_date', 'str_eligible', 'match_score'
+                'address', area_column, type_column, # Use dynamic cols
+                'bedrooms', 'bathrooms', 'sqft', # Add sqft
+                price_column, # Use dynamic price col
+                'price_per_sqft', 'sold_date', 'year_built', # Add year
+                'str_eligible', 'match_score'
             ]
-            # <<< MODIFIED (added property_type)
-
-            # Filter display_cols to only those present in comps_df AND not None
             display_cols_present = [col for col in display_cols if col and col in comps_df.columns]
 
-            # Add any missing essential columns back if they exist but weren't in the list
-            for essential in ['bedrooms', 'bathrooms', 'adjusted_sold_price_time', 'match_score']:
-                 if essential in comps_df.columns and essential not in display_cols_present:
-                      display_cols_present.append(essential)
-
-            # Ensure address is first if present
-            if 'address' in display_cols_present:
-                 display_cols_present.insert(0, display_cols_present.pop(display_cols_present.index('address')))
+            # Reorder essentials if needed (e.g., put price near end)
+            if price_column in display_cols_present:
+                 display_cols_present.remove(price_column)
+                 display_cols_present.insert(6, price_column) # Insert after sqft
 
 
-            st.dataframe(comps_df[display_cols_present], use_container_width=True)
-            st.markdown("*ℹ️ Match Score is a weighted similarity score (higher is better).*")
+            st.dataframe(
+                comps_df[display_cols_present],
+                column_config={ # Add formatting
+                    price_column: st.column_config.NumberColumn(f"{price_column.replace('_',' ').title()}", format="$%d"),
+                    "price_per_sqft": st.column_config.NumberColumn("Price/SqFt", format="$%d"),
+                    "sqft": st.column_config.NumberColumn("SqFt", format="%d"),
+                    "match_score": st.column_config.NumberColumn("Match Score", format="%.2f"),
+                    "sold_date": st.column_config.DateColumn("Sold Date", format="MM/DD/YYYY"),
+                 },
+                use_container_width=True
+            )
 
             # --- Summary Stats ---
             st.subheader("Summary Stats for Found Comps")
@@ -393,57 +533,31 @@ if submit:
             with c3: st.metric("Match Score Avg", f"{avg_score:.2f}" if avg_score else "N/A")
 
 
-            # --- Analysis Tabs ---
+            # --- Analysis Tabs --- (Keep simple for now)
             st.subheader("Analysis of Found Comps")
-            tab1, tab2, tab3 = st.tabs(["📊 Price Chart", "🗺️ Area Stats", "🔑 STR Summary"])
+            tab1, tab2 = st.tabs(["📊 Price Chart", "🗺️ Area/Type Counts"])
 
             with tab1:
                 st.markdown("#### Price Distribution")
-                price_col_options = ['adjusted_sold_price_time', 'sold_price', 'price']
-                price_col = next((col for col in price_col_options if col in comps_df.columns), None)
-
-                if price_col and not comps_df[price_col].dropna().empty:
-                    st.bar_chart(comps_df[[price_col]].dropna())
-                    st.caption(f"Using column: `{price_col}`")
+                if price_column and price_column in comps_df.columns and not comps_df[price_column].dropna().empty:
+                    st.bar_chart(comps_df[[price_column]].dropna())
+                    st.caption(f"Using column: `{price_column}`")
                 else:
-                    st.write("Could not find a suitable price column or data for the chart.")
+                    st.write("Could not find price data for chart.")
 
             with tab2:
-                st.markdown("#### Comps by Area")
-                if area_column and area_column in comps_df.columns:
-                    area_counts = comps_df[area_column].value_counts().reset_index()
-                    area_counts.columns = ["Area", "Comps Found"]
-                    st.dataframe(area_counts, use_container_width=True)
-                elif selected_areas:
-                     st.info(f"Area filter applied ({len(selected_areas)} areas), but the column '{area_column}' is not in the results DataFrame to show breakdown.")
-                else:
-                    st.write("No specific areas were selected, or area column not found in results.")
-
-            with tab3:
-                st.markdown("#### STR Eligibility Summary")
-                if 'str_eligible' in comps_df.columns:
-                    try:
-                         # Attempt robust mapping for boolean, numeric (0/1), or string
-                         if pd.api.types.is_bool_dtype(comps_df['str_eligible']):
-                              str_map = {True: 'Eligible', False: 'Not Eligible'}
-                         elif pd.api.types.is_numeric_dtype(comps_df['str_eligible']):
-                              str_map = {1: 'Eligible', 0: 'Not Eligible'}
-                         else: # Assume string or handle other types as 'Unknown'
-                              str_map = {'yes': 'Eligible', 'no': 'Not Eligible', 'true': 'Eligible', 'false': 'Not Eligible', 1: 'Eligible', 0: 'Not Eligible'} # Add common string variants
-
-                         # Apply mapping, treat unmappable as 'Unknown'
-                         str_series = comps_df['str_eligible'].astype(str).str.lower().map(str_map).fillna('Unknown')
-                         str_summary = str_series.value_counts().rename_axis("STR Status").reset_index(name="Count")
-                         st.dataframe(str_summary, use_container_width=True)
-
-                    except Exception as e:
-                         st.warning(f"Could not summarize STR eligibility: {e}")
-                         # Fallback: Show raw counts
-                         str_summary = comps_df['str_eligible'].value_counts().rename_axis("STR Status (Raw)").reset_index(name="Count")
-                         st.dataframe(str_summary, use_container_width=True)
-
-                else:
-                    st.write("'str_eligible' column not found in results.")
+                 st.markdown("#### Counts by Area & Type")
+                 c_a, c_t = st.columns(2)
+                 with c_a:
+                      if area_column and area_column in comps_df.columns:
+                           area_counts = comps_df[area_column].value_counts().rename_axis("Area").reset_index(name="Count")
+                           st.dataframe(area_counts, use_container_width=True)
+                      else: st.caption("Area data not available.")
+                 with c_t:
+                      if type_column and type_column in comps_df.columns:
+                           type_counts = comps_df[type_column].value_counts().rename_axis("Type").reset_index(name="Count")
+                           st.dataframe(type_counts, use_container_width=True)
+                      else: st.caption("Type data not available.")
 
 
             # --- Download ---
@@ -458,14 +572,4 @@ if submit:
 
         except Exception as e:
             st.error(f"An error occurred during the search: {str(e)}")
-            st.exception(e)
-            st.expander("Troubleshooting Details", expanded=False).write(f"""
-            **Error details**: {str(e)}
-            **Criteria Used**: {criteria}
-            **Type Column Used**: {type_column if 'type_column' in locals() else 'N/A'}
-            **Possible issues**:
-            - **`ClassicCompFinder` needs update**: Ensure the *real* `find_classic_comps` can handle criteria keys like '{type_column}' and list-based area filtering.
-            - **Column names**: Check if `{type_column}` or `{area_column}` actually exist in the loaded data (see Debug info above).
-            - **Data format**: Unexpected values in key columns.
-            Check the debug info above and ensure the `ClassicCompFinder` class implements the necessary filtering logic.
-            """)
+            st.exception(e) # Show full traceback for debugging
