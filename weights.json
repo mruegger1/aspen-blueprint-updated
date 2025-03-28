@@ -1,0 +1,14 @@
+{
+    "scoring_weights": {
+        "bedrooms": 2.0,
+        "bathrooms": 2.0,
+        "property_type": 2.0,
+        "area": 1.5,
+        "condition": 1.5,
+        "sqft": 1.0,
+        "str": 1.0,
+        "recency": 1.0,
+        "building_premium": 1.2,
+        "street_premium": 0.8
+    }
+}
