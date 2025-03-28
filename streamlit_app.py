@@ -211,67 +211,95 @@ Upload your Aspen dataset (or use the default), then adjust filters to find rele
 # --- Load Data Once ---
 @st.cache_data
 def load_data(uploaded_file=None):
+    """
+    Loads data using ClassicCompFinder.
+    Prioritizes loading via csv_path for the real class.
+    Handles dummy class creation if import fails or default path missing.
+    Does NOT perform preprocessing here - that happens after loading.
+    """
     finder_instance = None
-    df = None
-    message = None
     error_msg = None
+    success_msg = None
+    using_dummy = False
 
+    # Check if the real class was imported
     try:
-        if uploaded_file is not None:
-            content = uploaded_file.getvalue().decode("utf-8")
-            df = pd.read_csv(StringIO(content))
-            message = f"Uploaded file '{uploaded_file.name}' loaded ({len(df)} properties)"
+        from aspen_comp_finder.classic_finder import ClassicCompFinder
+        real_class_imported = True
+    except ImportError:
+        real_class_imported = False
+        # Use the dummy class defined globally in the script
+        global ClassicCompFinder # Make sure we're using the dummy one if defined
+        using_dummy = True
+
+    if uploaded_file is not None:
+        # Handling uploaded files with the REAL class is tricky if it only accepts paths.
+        if real_class_imported:
+             error_msg = "File uploads are not currently supported with the main ClassicCompFinder. Please use the default dataset."
+        # If using the DUMMY class, allow loading from upload
+        elif not real_class_imported:
+             try:
+                  content = uploaded_file.getvalue().decode("utf-8")
+                  df = pd.read_csv(StringIO(content))
+                  # Initialize DUMMY finder with data=df
+                  finder_instance = ClassicCompFinder(data=df)
+                  success_msg = f"Uploaded file '{uploaded_file.name}' loaded into DUMMY finder ({len(finder_instance.data)} properties)."
+             except Exception as e:
+                  error_msg = f"Failed to process uploaded file for DUMMY finder: {e}"
         else:
-            default_path = "data/aspen_mvp_final_scored.csv"
-            try:
-                df = pd.read_csv(default_path)
-                message = f"Default dataset loaded ({len(df)} properties)"
-            except FileNotFoundError:
-                st.warning(f"Default data file not found at '{default_path}'. Using dummy data structure.")
-                # Let finder init with None, it will generate dummy data if needed
-            except Exception as e:
-                 error_msg = f"Failed to load default data: {e}. Trying dummy data."
-                 st.warning(error_msg)
+             error_msg = "Inconsistent state regarding class import and file upload."
 
-        # --- Data Preprocessing (Including Mobile Home Removal) ---
-        if df is not None:
-            # Determine the property type column
-            type_col = 'resolved_property_type' if 'resolved_property_type' in df.columns else 'property_type'
-            if type_col in df.columns:
-                initial_count = len(df)
-                # Filter out 'Mobile Home' if the column exists
-                if 'Mobile Home' in df[type_col].unique():
-                    df = df[df[type_col] != 'Mobile Home'].copy()
-                    removed_count = initial_count - len(df)
-                    if removed_count > 0:
-                         message += f" (Removed {removed_count} Mobile Homes)."
-                # Handle potential NaN values in key filtering columns
-                filter_cols = ['bedrooms', 'bathrooms', 'adjusted_sold_price_time', 'sold_price', 'sqft', 'total_sqft', type_col]
-                for fc in filter_cols:
-                    if fc in df.columns and df[fc].isnull().any():
-                        # Decide on strategy: dropna or fillna(0)? Dropping seems safer for comps.
-                        # df = df.dropna(subset=[fc])
-                        # Or maybe just warn and let the filtering handle it? Let's warn for now.
-                         st.info(f"Column '{fc}' contains NaN values, which might affect filtering.")
+    else: # No file uploaded, use default path
+        default_path = "data/aspen_mvp_final_scored.csv"
+        try:
+            # If REAL class is available, initialize with csv_path
+            if real_class_imported:
+                finder_instance = ClassicCompFinder(csv_path=default_path)
+                # Basic check if data loaded (assuming .data attribute exists)
+                if not hasattr(finder_instance, 'data') or finder_instance.data is None or finder_instance.data.empty:
+                     raise ValueError(f"Real ClassicCompFinder loaded no data from {default_path}")
+                success_msg = f"Default dataset loaded via ClassicCompFinder ({len(finder_instance.data)} properties)."
 
+            # If REAL class failed import, use DUMMY class (which might also try path)
             else:
-                st.warning("Could not find 'resolved_property_type' or 'property_type' column for Mobile Home removal.")
+                st.warning("Using DUMMY ClassicCompFinder.")
+                finder_instance = ClassicCompFinder(csv_path=default_path) # Dummy might handle path OR generate data
+                if not hasattr(finder_instance, 'data') or finder_instance.data is None or finder_instance.data.empty:
+                     # If dummy also failed to load/generate, report error
+                     raise ValueError(f"Dummy ClassicCompFinder could not load or generate data (path: {default_path}).")
+                success_msg = f"DUMMY finder initialized (tried path, may use generated data) ({len(finder_instance.data)} properties)."
 
-            finder_instance = ClassicCompFinder(data=df) # Init with potentially processed df
-        else:
-            finder_instance = ClassicCompFinder() # Init empty, will generate dummy if needed
+        except FileNotFoundError:
+             error_msg = f"Default data file not found at '{default_path}'. "
+             if not real_class_imported:
+                  try:
+                       finder_instance = ClassicCompFinder() # Try init empty dummy -> generates data
+                       if hasattr(finder_instance, 'data') and not finder_instance.data.empty:
+                            success_msg = f"Using DUMMY generated data ({len(finder_instance.data)} rows)."
+                       else: error_msg += "Dummy data generation failed."
+                  except Exception as e_dummy: error_msg += f"Dummy data generation failed: {e_dummy}"
+             else: error_msg += "Cannot proceed without default file for the main finder."
 
-        # Final check if finder has data
-        if not hasattr(finder_instance, 'data') or finder_instance.data is None or finder_instance.data.empty:
-            error_msg = "Failed to load or generate any data."
-            finder_instance = None # Ensure finder is None if truly no data
+        except Exception as e:
+            error_msg = f"Failed to load default data using ClassicCompFinder: {e}. "
+            # Try dummy as last resort if not already using it
+            if real_class_imported: # Only try if the error wasn't from the dummy already
+                 try:
+                      st.warning("Attempting to use DUMMY finder as fallback.")
+                      finder_instance = ClassicCompFinder() # Init empty dummy
+                      if hasattr(finder_instance, 'data') and not finder_instance.data.empty:
+                           success_msg = f"Using DUMMY generated data ({len(finder_instance.data)} rows)."
+                           error_msg = None # Clear primary error if dummy succeeds
+                      else: error_msg += "Dummy fallback failed."
+                 except Exception as e_dummy_fb: error_msg += f"Dummy fallback failed: {e_dummy_fb}"
 
-    except Exception as e:
-        error_msg = f"An error occurred during data loading: {e}"
-        finder_instance = None # Ensure finder is None on error
+    # Final check
+    if finder_instance is None or not hasattr(finder_instance, 'data') or finder_instance.data is None:
+        # Ensure error message reflects total failure if needed
+        if not error_msg: error_msg = "Data could not be loaded or generated."
+        finder_instance = None # Make sure it's None if no data
 
-    return finder_instance, error_msg, message if not error_msg else None
-
+    return finder_instance, error_msg, success_msg
 
 # --- File Uploader ---
 uploaded_file = st.file_uploader("Upload your own CSV dataset (Optional)", type="csv")
@@ -281,7 +309,6 @@ finder, error, success_message = load_data(uploaded_file)
 
 if error:
     st.error(error)
-    # Attempt to proceed if finder has *dummy* data, otherwise stop
     if finder is None or not hasattr(finder, 'data') or finder.data.empty:
         st.stop()
     else:
@@ -291,9 +318,34 @@ elif success_message:
 
 # Final check before accessing finder.data
 if finder is None or not hasattr(finder, 'data') or finder.data is None:
-     st.error("Critical error: Finder object not available. Cannot proceed.")
+     st.error("Critical error: Finder object not available or has no data. Cannot proceed.")
      st.stop()
 
+# --- Apply Data Preprocessing Directly to finder.data ---
+try:
+    # Determine the property type column
+    proc_type_col = 'resolved_property_type' if 'resolved_property_type' in finder.data.columns else 'property_type'
+    if proc_type_col in finder.data.columns:
+        initial_count = len(finder.data)
+        # Filter out 'Mobile Home'
+        if 'Mobile Home' in finder.data[proc_type_col].unique():
+            finder.data = finder.data[finder.data[proc_type_col] != 'Mobile Home'].copy() # Modify finder's data
+            removed_count = initial_count - len(finder.data)
+            if removed_count > 0:
+                 st.info(f"Removed {removed_count} Mobile Home entries.")
+    else:
+        st.warning("Preprocessing: Could not find property type column for Mobile Home removal.")
+
+    # Handle NaNs in key columns if needed (example: fill price NaNs with 0 for filtering)
+    proc_price_col = 'adjusted_sold_price_time' if 'adjusted_sold_price_time' in finder.data.columns else 'sold_price'
+    if proc_price_col in finder.data.columns and finder.data[proc_price_col].isnull().any():
+         st.info(f"Column '{proc_price_col}' contains NaN values, which might affect filtering if not handled by the finder logic.")
+    # Add similar handling for beds, baths, sqft if necessary
+
+except Exception as e_proc:
+     st.error(f"Error during post-load data preprocessing: {e_proc}")
+     st.stop()
+# --- End Preprocessing ---
 
 # --- Determine Columns ---
 # Use helper or fallback for Area column
