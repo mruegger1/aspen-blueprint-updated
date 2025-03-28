@@ -14,7 +14,7 @@ This MVP auto-loads our scored Aspen dataset and runs the ClassicCompFinder engi
 @st.cache_data
 def load_default_data():
     try:
-        finder = ClassicCompFinder()  # Uses default CSV path logic
+        finder = ClassicCompFinder(csv_path="data/aspen_mvp_final_scored.csv")  # Directly specify the CSV path
         return finder, None
     except Exception as e:
         return None, str(e)
